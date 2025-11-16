@@ -1,0 +1,35 @@
+{
+	"name": "galeria-api",
+	"version": "1.0.0",
+	"main": "src/index.ts",
+	"type": "module",
+	"scripts": {
+		"dev": "tsx watch --env-file=.env src/server.ts",
+		"start": "node dist/server.js",
+		"format": "pnpm exec biome format --write"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"packageManager": "pnpm@10.22.0",
+	"devDependencies": {
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "^24.10.1",
+		"tsx": "^4.20.6",
+		"typescript": "^5.9.3"
+	},
+	"dependencies": {
+		"@fastify/cors": "^11.1.0",
+		"@fastify/multipart": "^9.3.0",
+		"@fastify/swagger": "^9.6.1",
+		"@googleapis/drive": "^19.2.0",
+		"@scalar/fastify-api-reference": "^1.39.3",
+		"@sinclair/typebox": "^0.32.0",
+		"fastify": "^5.6.2",
+		"fastify-multipart": "^5.4.0",
+		"fastify-type-provider-zod": "^6.1.0",
+		"googleapis": "^166.0.0",
+		"pino-pretty": "^13.1.2",
+		"zod": "^4.1.12"
+	}
+}
