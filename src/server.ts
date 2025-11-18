@@ -2,47 +2,43 @@ import { fastifyCors } from '@fastify/cors'
 import multipart from '@fastify/multipart'
 import { fastifySwagger } from '@fastify/swagger'
 import { fastify, FastifyReply, FastifyRequest } from 'fastify'
-import { jsonSchemaTransform, serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod'
-import { generateFileName, isValidImage, streamToBuffer } from './utils/file.utils.js'
-import { googleDriveService } from './services/google-drive.service.js'
-import { ErrorResponseSchema, UploadResponseSchema } from './schemas/file.schemas.js'
+// Usamos TypeBox para schemas (JSON Schema). Não usar o provedor Zod aqui para evitar
+// conflito entre formatos de schema (Zod vs TypeBox).
+import fastifyCookie from '@fastify/cookie'
+import fastifySession from '@fastify/session'
+import { Type } from '@sinclair/typebox'
+import {
+   CombinedErrorResponseSchema,
+   ErrorResponseSchema,
+   UploadResponseSchema,
+   UserInfoSchema,
+} from './schemas/file.schemas.js'
+import {
+   GoogleDriveService,
+   googleDriveService,
+} from './services/google-drive.service.js'
+import { formatDuration, generateFileName, isValidImage } from './utils/file.utils.js'
+
+// Inicializar Google Auth
+const googleAuth = new GoogleDriveService();
+let tokens;
 
 const app = fastify({
    logger: {
       level: 'info',
-      transport: process.env.NODE_ENV === 'development' ? {
-         target: 'pino-pretty',
-         options: {
-            colorize: true,
-            translateTime: 'HH:MM:ss Z',
-            ignore: 'pid,hostname'
-         }
-      } : undefined
-   }
-}).withTypeProvider<ZodTypeProvider>()
-
-app.setValidatorCompiler(validatorCompiler)
-app.setSerializerCompiler(serializerCompiler)
-
-app.register(fastifyCors, {
-   origin: true,
-   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-})
-
-app.register(fastifySwagger, {
-   openapi: {
-      info: {
-         title: 'Galeria API',
-         description: 'API documentation for Galeria',
-         version: '1.0.0',
-      },
+      transport:
+         process.env.NODE_ENV === 'development'
+            ? {
+               target: 'pino-pretty',
+               options: {
+                  colorize: true,
+                  translateTime: 'HH:MM:ss Z',
+                  ignore: 'pid,hostname',
+               },
+            }
+            : undefined,
    },
-   transform: jsonSchemaTransform,
-})
-
-// app.register(ScalarApiReference, {
-//    routerPrefix: '/docs',
-// })
+});
 
 // Registrar @fastify/multipart
 const registerPlugins = async () => {
@@ -54,195 +50,444 @@ const registerPlugins = async () => {
       attachFieldsToBody: false,
       throwFileSizeLimit: false,
    });
+   await app.register(fastifyCookie)
+   await app.register(fastifySession, {
+      secret: process.env.SESSION_SECRET || 'session-secret-change-in-production',
+      cookie: {
+         secure: process.env.NODE_ENV === 'production',
+         maxAge: 24 * 60 * 60 * 1000, // 24 horas
+         httpOnly: true,
+         path: '/',
+      },
+   });
+
+   app.register(fastifyCors, {
+      origin: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+   })
+
+   app.register(fastifySwagger, {
+      openapi: {
+         info: {
+            title: 'Galeria API',
+            description: 'API documentation for Galeria',
+            version: '1.0.0',
+         },
+      },
+      // Sem transform específico — usamos os schemas TypeBox diretamente
+   })
 }
+
+// Middleware de autenticação
+const authenticate = async (
+   request: {
+      session: {
+         authenticated: any
+         tokens: { access_token: any }
+         destroy: () => void
+      }
+   },
+   reply: {
+      status: (arg0: number) => {
+         (): any
+         new(): any
+         send: {
+            (arg0: { success: boolean; error: string }): any
+            new(): any
+         }
+      }
+   },
+) => {
+   try {
+      if (!request.session.authenticated || !request.session.tokens) {
+         return reply.status(401).send({
+            success: false,
+            error: 'Autenticação necessária. Faça login em /auth/google',
+         })
+      }
+
+      const isValid = await googleAuth.validateTokens(request.session.tokens)
+      if (!isValid) {
+         request.session.destroy()
+         return reply.status(401).send({
+            success: false,
+            error: 'Sessão expirada. Faça login novamente',
+         })
+      }
+   } catch (error) {
+      app.log.error(`Erro na autenticação: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      return reply.status(401).send({
+         success: false,
+         error: 'Erro de autenticação',
+      })
+   }
+}
+
+// Registrar plugins
+
 
 // Health check
 app.get('/health', async () => {
    return {
       status: 'OK',
       service: 'Google Drive Upload API',
-      timestamp: new Date().toISOString()
-   };
-});
+      timestamp: new Date().toISOString(),
+   }
+})
 
 // Rota de upload de imagem
 app.route({
    method: 'POST',
    url: '/upload',
    schema: {
+      body: Type.Object({
+         filename: Type.String(),
+         mimeType: Type.String(),
+         data: Type.String(), // base64
+      }),
       response: {
          200: UploadResponseSchema,
-         400: ErrorResponseSchema,
-         500: ErrorResponseSchema,
+         400: CombinedErrorResponseSchema,
+         500: CombinedErrorResponseSchema,
       },
    },
-   handler: async (request: FastifyRequest, reply: FastifyReply) => {
-      try {
-         const data = await request.file();
-
-         if (!data) {
-            return reply.status(400).send({
-               success: false,
-               error: 'Nenhum arquivo enviado'
-            });
+   handler: async (
+      request: FastifyRequest<{
+         Body: {
+            filename: string
+            mimeType: string
+            data: string
          }
+      }>,
+      reply: FastifyReply,
+   ) => {
+      try {
+         const { filename, mimeType, data } = request.body
 
          // Validar tipo de arquivo
-         if (!isValidImage(data.mimetype)) {
+         if (!isValidImage(mimeType)) {
             return reply.status(400).send({
                success: false,
-               error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)'
-            });
+               error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
+            })
          }
 
-         // Validar tamanho do arquivo
-         if (data.file.truncated) {
+         // Converter base64 para buffer
+         const buffer = Buffer.from(data, 'base64')
+
+         // Validar tamanho
+         if (buffer.length > 10 * 1024 * 1024) {
             return reply.status(400).send({
                success: false,
-               error: 'Arquivo muito grande. Tamanho máximo: 10MB'
-            });
+               error: 'Arquivo muito grande. Tamanho máximo: 10MB',
+            })
          }
-
-         // Ler o arquivo como buffer
-         const buffer = await streamToBuffer(data.file);
 
          // Gerar nome único
-         const fileName = generateFileName(data.filename);
+         const fileName = generateFileName(filename)
 
          // Fazer upload para o Google Drive
          const uploadResult = await googleDriveService.uploadFile(
             buffer,
             fileName,
-            data.mimetype
-         );
+            mimeType,
+         )
 
          return {
             success: true,
             message: 'Imagem enviada com sucesso',
             data: uploadResult,
+         }
+      } catch (error) {
+         app.log.error(error)
+         return reply.status(500).send({
+            success: false,
+            error: 'Erro interno do servidor',
+         })
+      }
+   },
+})
+
+// Rota alternativa de upload que aceita JSON base64
+app.route({
+   method: 'POST',
+   url: '/upload-base64',
+   schema: {
+      body: Type.Object({
+         filename: Type.String(),
+         mimeType: Type.String(),
+         data: Type.String(), // base64
+      }),
+      response: {
+         200: UploadResponseSchema,
+         400: CombinedErrorResponseSchema,
+         500: CombinedErrorResponseSchema,
+      },
+   },
+   handler: async (
+      request: FastifyRequest<{
+         Body: {
+            filename: string
+            mimeType: string
+            data: string
+         }
+      }>,
+      reply: FastifyReply,
+   ) => {
+      try {
+         const { filename, mimeType, data } = request.body
+
+         // Validar tipo de arquivo
+         if (!isValidImage(mimeType)) {
+            return reply.status(400).send({
+               success: false,
+               error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
+            })
+         }
+
+         // Converter base64 para buffer
+         const buffer = Buffer.from(data, 'base64')
+
+         // Validar tamanho
+         if (buffer.length > 10 * 1024 * 1024) {
+            return reply.status(400).send({
+               success: false,
+               error: 'Arquivo muito grande. Tamanho máximo: 10MB',
+            })
+         }
+
+         // Gerar nome único
+         const pictureName = generateFileName(filename)
+
+         // Fazer upload para o Google Drive
+         const uploadResult = await googleDriveService.uploadFile(
+            buffer,
+            pictureName,
+            mimeType,
+            tokens
+         )
+
+         return {
+            success: true,
+            message: 'Imagem enviada com sucesso',
+            data: uploadResult,
+         }
+      } catch (error) {
+         console.error('Erro no upload base64:', error)
+         return reply.status(500).send({
+            success: false,
+            error: 'Erro interno do servidor',
+         })
+      }
+   },
+})
+
+// Inicialização do servidor
+const start = async (): Promise<void> => {
+   try {
+      await registerPlugins()
+
+      const port = parseInt(process.env.PORT || '3333')
+      const host = '0.0.0.0'
+
+      await app.listen({ port, host }).then(() => {
+         console.log('🔥 HTTP server running on http://localhost:3333 !')
+         console.log('📚 docs available at http://localhost:3333/docs')
+         console.log(`Servidor rodando na porta ${port}`)
+      })
+   } catch (err) {
+      app.log.error(err)
+      process.exit(1)
+   }
+}
+
+// Manipulação de graceful shutdown
+process.on('SIGINT', async () => {
+   app.log.info('Encerrando servidor...')
+   await app.close()
+   process.exit(0)
+})
+
+process.on('SIGTERM', async () => {
+   app.log.info('Encerrando servidor...')
+   await app.close()
+   process.exit(0)
+})
+
+// Rota inicial
+app.route({
+   method: 'GET',
+   url: '/',
+   schema: {
+      response: {
+         200: Type.Object({
+            message: Type.String(),
+            authUrl: Type.String(),
+            endpoints: Type.Array(Type.String())
+         })
+      }
+   },
+   handler: async () => {
+      const authUrl = googleAuth.generateAuthUrl();
+      return {
+         message: 'Google Cloud Authentication API',
+         authUrl: authUrl,
+         endpoints: [
+            'GET / - Esta página',
+            'GET /auth/google - Iniciar autenticação',
+            'GET /auth/google/callback - Callback OAuth',
+            'GET /dashboard - Dashboard protegido',
+            'GET /cloud-projects - Listar projetos',
+            'POST /logout - Fazer logout',
+            'GET /session-status - Status da sessão'
+         ]
+      };
+   }
+});
+
+// Rota de login
+app.route({
+   method: 'GET',
+   url: '/auth/google',
+   schema: {
+      response: {
+         500: ErrorResponseSchema
+      }
+   },
+   handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+         const authUrl = googleAuth.generateAuthUrl();
+         reply.redirect(authUrl);
+      } catch (error) {
+         app.log.error(error);
+         return reply.status(500).send({
+            success: false,
+            error: 'Erro ao gerar URL de autenticação'
+         });
+      }
+   }
+});
+
+// Rota de callback
+app.route({
+   method: 'GET',
+   url: '/auth/google/callback',
+   schema: {
+      querystring: Type.Object({
+         code: Type.Optional(Type.String()),
+         error: Type.Optional(Type.String())
+      }),
+      response: {
+         400: ErrorResponseSchema,
+         500: ErrorResponseSchema
+      }
+   },
+   handler: async (request: FastifyRequest<{
+         Querystring: {
+            code: string
+            error: string
+         }
+         session: {
+            authenticated: boolean
+            tokens: any
+            user: any
+            loginTime: number
+         }
+      }>, reply: FastifyReply) => {
+      try {
+         const { code, error } = request.query;
+
+         if (error) {
+            return reply.status(400).send({
+               success: false,
+               error: `Erro do Google: ${error}`
+            });
+         }
+
+         if (!code) {
+            return reply.status(400).send({
+               success: false,
+               error: 'Código de autorização não fornecido'
+            });
+         }
+
+         const tokens = await googleAuth.getTokens(code);
+         const userInfo = await googleAuth.getUserInfo(tokens);
+
+         // Inicializar sessão de forma segura
+         initializeSession(request.session, tokens, userInfo);
+
+         app.log.info(`Usuário autenticado: ${userInfo.email}`);
+
+         reply.redirect('/dashboard');
+
+      } catch (error) {
+         app.log.error(`Erro no callback: ${error instanceof Error ? error.message : ''}`);
+         return reply.status(500).send({
+            success: false,
+            error: 'Falha na autenticação com Google'
+         });
+      }
+   }
+});
+
+// Rota do dashboard
+app.route({
+   method: 'GET',
+   url: '/dashboard',
+   schema: {
+      response: {
+         200: Type.Object({
+            success: Type.Boolean({ default: true }),
+            user: UserInfoSchema,
+            sessionInfo: Type.Object({
+               loginTime: Type.Number(),
+               duration: Type.String()
+            })
+         }),
+         401: ErrorResponseSchema,
+         500: ErrorResponseSchema
+      }
+   },
+   preHandler: [authenticate],
+   handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+         const user = request.session.user;
+         const loginTime = request.session.loginTime;
+         const duration = formatDuration(Date.now() - loginTime);
+         tokens = request.session.tokens;
+         googleDriveService.setAuthTokens(tokens);
+
+         return {
+            success: true,
+            user: {
+               id: user.id,
+               name: user.name,
+               email: user.email,
+               picture: user.picture
+            },
+            sessionInfo: {
+               loginTime: loginTime,
+               duration: duration
+            }
          };
       } catch (error) {
          app.log.error(error);
          return reply.status(500).send({
             success: false,
-            error: 'Erro interno do servidor'
+            error: 'Erro ao carregar dashboard'
          });
       }
-   },
-});
-
-// Rota alternativa de upload que aceita JSON base64
-app.route({
-  method: 'POST',
-  url: '/upload-base64',
-  schema: {
-    body: Type.Object({
-      filename: Type.String(),
-      mimeType: Type.String(),
-      data: Type.String() // base64
-    }),
-    response: {
-      200: UploadResponseSchema,
-      400: ErrorResponseSchema,
-      500: ErrorResponseSchema,
-    },
-  },
-  handler: async (request: FastifyRequest<{
-    Body: {
-      filename: string;
-      mimeType: string;
-      data: string;
-    }
-  }>, reply: FastifyReply) => {
-    try {
-      const { filename, mimeType, data } = request.body;
-
-      // Validar tipo de arquivo
-      if (!isValidImage(mimeType)) {
-        return reply.status(400).send({
-          success: false,
-          error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)'
-        });
-      }
-
-      // Converter base64 para buffer
-      const buffer = Buffer.from(data, 'base64');
-
-      // Validar tamanho
-      if (buffer.length > 10 * 1024 * 1024) {
-        return reply.status(400).send({
-          success: false,
-          error: 'Arquivo muito grande. Tamanho máximo: 10MB'
-        });
-      }
-
-      // Gerar nome único
-      const fileName = generateFileName(filename);
-
-      // Fazer upload para o Google Drive
-      const uploadResult = await googleDriveService.uploadFile(
-        buffer,
-        fileName,
-        mimeType
-      );
-
-      return {
-        success: true,
-        message: 'Imagem enviada com sucesso',
-        data: uploadResult,
-      };
-    } catch (error) {
-      console.error('Erro no upload base64:', error);
-      return reply.status(500).send({ 
-        success: false,
-        error: 'Erro interno do servidor' 
-      });
-    }
-  },
-});
-
-// Inicialização do servidor
-const start = async (): Promise<void> => {
-   try {
-      await registerPlugins();
-
-      const port = parseInt(process.env.PORT || '3333');
-      const host = '0.0.0.0';
-
-      await app.listen({ port, host }).then(() => {
-         console.log('🔥 HTTP server running on http://localhost:3333 !')
-         console.log('📚 docs available at http://localhost:3333/docs')
-         console.log(`Servidor rodando na porta ${port}`);
-      });
-   } catch (err) {
-      app.log.error(err);
-      process.exit(1);
    }
+});
+
+// Helper para inicializar sessão de forma segura
+const initializeSession = (session: { authenticated: boolean; tokens: any; user: any; loginTime: number }, tokens: any, userInfo: any) => {
+   session.authenticated = true;
+   session.tokens = tokens;
+   session.user = userInfo;
+   session.loginTime = Date.now();
 };
 
 
-// Manipulação de graceful shutdown
-process.on('SIGINT', async () => {
-   app.log.info('Encerrando servidor...');
-   await app.close();
-   process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-   app.log.info('Encerrando servidor...');
-   await app.close();
-   process.exit(0);
-});
-
-app.get('/', (request, reply) => {
-   console.log(request.ip)
-   console.log(request.ips)
-   console.log(request.host)
-   console.log(request.protocol)
-})
-
-// app.listen({ port: 3333, host: 'localhost' }).then(() => {
-
-// })
-
-start();
+start()
