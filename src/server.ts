@@ -14,13 +14,15 @@ import {
    UserInfoSchema,
 } from './schemas/file.schemas.js'
 import {
-   GoogleDriveService,
    googleDriveService,
+   GoogleDriveService,
 } from './services/google-drive.service.js'
 import { formatDuration, generateFileName, isValidImage } from './utils/file.utils.js'
+import { EncryptionService } from './utils/encryption.js'
 
 // Inicializar Google Auth
-const googleAuth = new GoogleDriveService();
+const googleAuth = new GoogleDriveService('16jYvRHfQBx93DGe97GapL5kqWKKDYvm4');
+const encryptionService = new EncryptionService();
 let tokens;
 
 const app = fastify({
@@ -162,18 +164,34 @@ app.route({
       reply: FastifyReply,
    ) => {
       try {
-         const { filename, mimeType, data } = request.body
+         const { filename, data } = request.body
+         let mimeType: string | undefined = (request.body as any).mimeType
 
          // Validar tipo de arquivo
-         if (!isValidImage(mimeType)) {
-            return reply.status(400).send({
-               success: false,
-               error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
-            })
+
+            // Agora valide o tipo de arquivo (depois de possivelmente extrair do dataURL)
+            if (!mimeType || !isValidImage(mimeType)) {
+               return reply.status(400).send({
+                  success: false,
+                  error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
+               })
+            }
+
+         // Se o cliente enviou uma dataURL (data:image/png;base64,AAAA...),
+         // remover o prefixo antes de converter para buffer.
+         let base64Data = data
+         if (typeof base64Data === 'string' && base64Data.startsWith('data:')) {
+            const idx = base64Data.indexOf(',')
+            if (idx !== -1) base64Data = base64Data.slice(idx + 1)
+            // se o mimeType não foi enviado, tente extrair do dataURL
+            if (!mimeType) {
+               const m = data.match(/^data:(.*);base64,/) 
+               if (m) mimeType = m[1]
+            }
          }
 
          // Converter base64 para buffer
-         const buffer = Buffer.from(data, 'base64')
+         const buffer = Buffer.from(base64Data, 'base64')
 
          // Validar tamanho
          if (buffer.length > 10 * 1024 * 1024) {
@@ -187,10 +205,11 @@ app.route({
          const fileName = generateFileName(filename)
 
          // Fazer upload para o Google Drive
-         const uploadResult = await googleDriveService.uploadFile(
+         const uploadResult = await googleAuth.uploadFile(
             buffer,
             fileName,
             mimeType,
+            tokens
          )
 
          return {
@@ -235,7 +254,8 @@ app.route({
       reply: FastifyReply,
    ) => {
       try {
-         const { filename, mimeType, data } = request.body
+         const { filename, data } = request.body
+         let mimeType: string | undefined = (request.body as any).mimeType
 
          // Validar tipo de arquivo
          if (!isValidImage(mimeType)) {
@@ -245,8 +265,20 @@ app.route({
             })
          }
 
+         // Se o cliente enviou uma dataURL (data:image/png;base64,AAAA...),
+         // remover o prefixo antes de converter para buffer.
+         let base64Data = data
+         if (typeof base64Data === 'string' && base64Data.startsWith('data:')) {
+            const idx = base64Data.indexOf(',')
+            if (idx !== -1) base64Data = base64Data.slice(idx + 1)
+            if (!mimeType) {
+               const m = data.match(/^data:(.*);base64,/) 
+               if (m) mimeType = m[1]
+            }
+         }
+
          // Converter base64 para buffer
-         const buffer = Buffer.from(data, 'base64')
+         const buffer = Buffer.from(base64Data, 'base64')
 
          // Validar tamanho
          if (buffer.length > 10 * 1024 * 1024) {
@@ -258,13 +290,20 @@ app.route({
 
          // Gerar nome único
          const pictureName = generateFileName(filename)
+         if (!tokens) {
+            return reply.status(401).send({
+               success: false,
+               error: 'Sessão expirada. Faça login novamente',
+            })
+         }
+         const decryptedTokens = encryptionService.decrypt(tokens);
 
          // Fazer upload para o Google Drive
-         const uploadResult = await googleDriveService.uploadFile(
+         const uploadResult = await googleAuth.uploadFile(
             buffer,
             pictureName,
             mimeType,
-            tokens
+            JSON.parse(decryptedTokens)
          )
 
          return {
@@ -455,8 +494,9 @@ app.route({
          const user = request.session.user;
          const loginTime = request.session.loginTime;
          const duration = formatDuration(Date.now() - loginTime);
-         tokens = request.session.tokens;
-         googleDriveService.setAuthTokens(tokens);
+         if (request?.session?.tokens) {
+            tokens = encryptionService.encrypt(JSON.stringify(request.session.tokens));
+         }
 
          return {
             success: true,
