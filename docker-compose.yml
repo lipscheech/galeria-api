@@ -1,0 +1,29 @@
+services:
+  galeria-api:
+    # Build usando o Dockerfile presente na raiz do projeto
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Carrega variáveis de ambiente do arquivo .env na raiz do projeto
+    env_file:
+      - .env
+
+    # Expor a porta do app (ajuste se necessário)
+    ports:
+      - "3333:3333"
+
+    # Bind mount do código para desenvolvimento (live-reload via pnpm dev).
+    # Em produção, remova este volume para usar o artefato do build no container.
+    volumes:
+      # - ./:/usr/src/app:cached
+      - node_modules:/usr/src/app/node_modules
+
+    # Comando de desenvolvimento (usa script "dev" do package.json).
+    # command: pnpm dev
+
+    restart: unless-stopped
+
+volumes:
+  node_modules:
+    driver: local

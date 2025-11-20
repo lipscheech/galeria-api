@@ -2,13 +2,14 @@
 # Imagem base Node LTS
 FROM node:20-slim
 
-# Diretório de trabalho
-WORKDIR /app
+# Diretório de trabalho (alinhado com docker-compose)
+WORKDIR /usr/src/app
 
 # Ativar corepack e instalar pnpm na versão usada pelo projeto
 RUN corepack enable && corepack prepare pnpm@10.22.0 --activate
 
 # Copiar manifests e instalar dependências
+# Copiar manifests e instalar dependências (camada separada para cache)
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
@@ -19,9 +20,11 @@ COPY . .
 ENV NODE_ENV=production
 ENV PORT=3333
 
+RUN pnpm run build
+
 # Porta exposta
 EXPOSE 3333
 
 # Iniciar a aplicação usando tsx (executa TypeScript diretamente). Em produção
 # você pode preferir compilar para JS e rodar `node dist/server.js`.
-CMD ["pnpm", "exec", "tsx", "src/server.ts"]
+CMD ["node", "dist/out-tsc/server.js"]
