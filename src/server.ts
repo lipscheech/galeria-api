@@ -5,25 +5,39 @@ import { fastify, FastifyReply, FastifyRequest } from 'fastify'
 // Usamos TypeBox para schemas (JSON Schema). Não usar o provedor Zod aqui para evitar
 // conflito entre formatos de schema (Zod vs TypeBox).
 import fastifyCookie from '@fastify/cookie'
-import fastifySession from '@fastify/session'
+import fastifySession, { type FastifySessionObject } from '@fastify/session'
 import { Type } from '@sinclair/typebox'
 import {
    CombinedErrorResponseSchema,
-   ErrorResponseSchema,
    UploadResponseSchema,
+   ErrorResponseSchema,
    UserInfoSchema,
 } from './schemas/file.schemas.js'
-import {
-   googleDriveService,
-   GoogleDriveService,
-} from './services/google-drive.service.js'
-import { formatDuration, generateFileName, isValidImage } from './utils/file.utils.js'
+import { GoogleDriveService } from './services/google-drive.service.js'
 import { EncryptionService } from './utils/encryption.js'
+import { formatDuration, generateFileName, isValidImage } from './utils/file.utils.js'
+import { GoogleTokens } from './models/google-tokens.model.js'
+import { de, en } from 'zod/locales'
+
+// tipo mínimo de tokens aceitos pelas chamadas ao Google
+type GoogleTokensMinimal = {
+   access_token: string
+   refresh_token?: string
+   expiry_date?: number
+   token_type?: string
+   scope?: string
+   id_token?: string
+}
 
 // Inicializar Google Auth
 const googleAuth = new GoogleDriveService('16jYvRHfQBx93DGe97GapL5kqWKKDYvm4');
 const encryptionService = new EncryptionService();
-let tokens;
+let tokens: {
+   iv?: string,
+   data?: string
+   tag?: string
+} = {};
+// tokens module variable removed; we rely on session-scoped tokens
 
 const app = fastify({
    logger: {
@@ -80,35 +94,29 @@ const registerPlugins = async () => {
    })
 }
 
+// Definição local do tipo de sessão estendida usada pela aplicação
+type AppSession = FastifySessionObject & {
+   authenticated?: boolean
+   tokens?: unknown
+   tokensEncrypted?: unknown
+   user?: unknown
+   loginTime?: number
+}
+
 // Middleware de autenticação
-const authenticate = async (
-   request: {
-      session: {
-         authenticated: any
-         tokens: { access_token: any }
-         destroy: () => void
-      }
-   },
-   reply: {
-      status: (arg0: number) => {
-         (): any
-         new(): any
-         send: {
-            (arg0: { success: boolean; error: string }): any
-            new(): any
-         }
-      }
-   },
-) => {
+const authenticate = async (request: FastifyRequest & { session: AppSession }, reply: FastifyReply) => {
    try {
-      if (!request.session.authenticated || !request.session.tokens) {
+      if (!request.
+         
+         
+         session?.authenticated || !request.session?.tokens) {
          return reply.status(401).send({
             success: false,
             error: 'Autenticação necessária. Faça login em /auth/google',
          })
       }
-
-      const isValid = await googleAuth.validateTokens(request.session.tokens)
+      const googleTokens = encryptionService.decrypt(request.session.tokens)
+      const isValid = await googleAuth.validateTokens(JSON.parse(googleTokens) as unknown as GoogleTokensMinimal)
       if (!isValid) {
          request.session.destroy()
          return reply.status(401).send({
@@ -153,76 +161,70 @@ app.route({
          500: CombinedErrorResponseSchema,
       },
    },
-   handler: async (
-      request: FastifyRequest<{
-         Body: {
-            filename: string
-            mimeType: string
-            data: string
-         }
-      }>,
-      reply: FastifyReply,
-   ) => {
+   handler: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-         const { filename, data } = request.body
-         let mimeType: string | undefined = (request.body as any).mimeType
+         const rawBody = request.body
 
-         // Validar tipo de arquivo
+         let filename: string | undefined
+         let data: string | undefined
+         let mimeType: string | undefined
 
-            // Agora valide o tipo de arquivo (depois de possivelmente extrair do dataURL)
-            if (!mimeType || !isValidImage(mimeType)) {
-               return reply.status(400).send({
-                  success: false,
-                  error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
-               })
+         if (typeof rawBody === 'string') {
+            if (rawBody.trim().startsWith('{')) {
+               try {
+                  const parsed = JSON.parse(rawBody) as { filename?: string; fileName?: string; data?: string; base64?: string; mimeType?: string }
+                  filename = parsed.filename ?? parsed.fileName
+                  data = parsed.data ?? parsed.base64
+                  mimeType = parsed.mimeType
+               } catch (e) {
+                  data = rawBody
+               }
+            } else {
+               data = rawBody
             }
+         } else if (rawBody && typeof rawBody === 'object') {
+            const b = rawBody as { filename?: string; fileName?: string; data?: string; base64?: string; mimeType?: string }
+            filename = b.filename ?? b.fileName
+            data = b.data ?? b.base64
+            mimeType = b.mimeType
+         }
 
-         // Se o cliente enviou uma dataURL (data:image/png;base64,AAAA...),
-         // remover o prefixo antes de converter para buffer.
+         if (!data) {
+            return reply.status(400).send({ success: false, error: 'Campo de dados (base64) ausente' })
+         }
+
+         // extrair mimeType se data for dataURL
+         if (!mimeType && typeof data === 'string' && data.startsWith('data:')) {
+            const m = data.match(/^data:(.*);base64,/)
+            if (m) mimeType = m[1]
+         }
+
+         if (!mimeType || !isValidImage(mimeType)) {
+            return reply.status(400).send({ success: false, error: 'Tipo de arquivo não permitido. Use apenas imagens' })
+         }
+
          let base64Data = data
-         if (typeof base64Data === 'string' && base64Data.startsWith('data:')) {
+         if (base64Data.startsWith('data:')) {
             const idx = base64Data.indexOf(',')
             if (idx !== -1) base64Data = base64Data.slice(idx + 1)
-            // se o mimeType não foi enviado, tente extrair do dataURL
-            if (!mimeType) {
-               const m = data.match(/^data:(.*);base64,/) 
-               if (m) mimeType = m[1]
-            }
          }
 
-         // Converter base64 para buffer
          const buffer = Buffer.from(base64Data, 'base64')
 
-         // Validar tamanho
          if (buffer.length > 10 * 1024 * 1024) {
-            return reply.status(400).send({
-               success: false,
-               error: 'Arquivo muito grande. Tamanho máximo: 10MB',
-            })
+            return reply.status(400).send({ success: false, error: 'Arquivo muito grande. Tamanho máximo: 10MB' })
          }
 
-         // Gerar nome único
-         const fileName = generateFileName(filename)
+         const fileName = generateFileName(filename ?? 'upload')
+         const session = request.session as AppSession
+         const sessionTokens = session?.tokens ?? session?.tokensEncrypted ?? null
 
-         // Fazer upload para o Google Drive
-         const uploadResult = await googleAuth.uploadFile(
-            buffer,
-            fileName,
-            mimeType,
-            tokens
-         )
+         const uploadResult = await googleAuth.uploadFile(buffer, fileName, mimeType as string, sessionTokens as unknown as GoogleTokens)
 
-         return {
-            success: true,
-            message: 'Imagem enviada com sucesso',
-            data: uploadResult,
-         }
+         return { success: true, message: 'Imagem enviada com sucesso', data: uploadResult }
       } catch (error) {
          app.log.error(error)
-         return reply.status(500).send({
-            success: false,
-            error: 'Erro interno do servidor',
-         })
+         return reply.status(500).send({ success: false, error: 'Erro interno do servidor' })
       }
    },
 })
@@ -243,80 +245,74 @@ app.route({
          500: CombinedErrorResponseSchema,
       },
    },
-   handler: async (
-      request: FastifyRequest<{
-         Body: {
-            filename: string
-            mimeType: string
-            data: string
-         }
-      }>,
-      reply: FastifyReply,
-   ) => {
+   handler: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-         const { filename, data } = request.body
-         let mimeType: string | undefined = (request.body as any).mimeType
+         const rawBody = request.body
 
-         // Validar tipo de arquivo
-         if (!isValidImage(mimeType)) {
-            return reply.status(400).send({
-               success: false,
-               error: 'Tipo de arquivo não permitido. Use apenas imagens (JPEG, PNG, GIF, WebP, SVG)',
-            })
+         let filename: string | undefined
+         let data: string | undefined
+         let mimeType: string | undefined
+
+         if (typeof rawBody === 'string') {
+            if (rawBody.trim().startsWith('{')) {
+               try {
+                  const parsed = JSON.parse(rawBody) as { filename?: string; fileName?: string; data?: string; base64?: string; mimeType?: string }
+                  filename = parsed.filename ?? parsed.fileName
+                  data = parsed.data ?? parsed.base64
+                  mimeType = parsed.mimeType
+               } catch (e) {
+                  app.log.debug('upload-base64: body is not JSON, treating as raw string')
+                  data = rawBody
+               }
+            } else {
+               data = rawBody
+            }
+         } else if (rawBody && typeof rawBody === 'object') {
+            const b = rawBody as { filename?: string; fileName?: string; data?: string; base64?: string; mimeType?: string }
+            filename = b.filename ?? b.fileName
+            data = b.data ?? b.base64
+            mimeType = b.mimeType
          }
 
-         // Se o cliente enviou uma dataURL (data:image/png;base64,AAAA...),
-         // remover o prefixo antes de converter para buffer.
+         if (!data) {
+            return reply.status(400).send({ success: false, error: 'Campo de dados (base64) ausente' })
+         }
+
+         if (!mimeType && typeof data === 'string' && data.startsWith('data:')) {
+            const m = data.match(/^data:(.*);base64,/)
+            if (m) mimeType = m[1]
+         }
+
+         if (!mimeType || !isValidImage(mimeType)) {
+            return reply.status(400).send({ success: false, error: 'Tipo de arquivo não permitido. Use apenas imagens' })
+         }
+
          let base64Data = data
-         if (typeof base64Data === 'string' && base64Data.startsWith('data:')) {
+         if (base64Data.startsWith('data:')) {
             const idx = base64Data.indexOf(',')
             if (idx !== -1) base64Data = base64Data.slice(idx + 1)
-            if (!mimeType) {
-               const m = data.match(/^data:(.*);base64,/) 
-               if (m) mimeType = m[1]
-            }
          }
 
-         // Converter base64 para buffer
          const buffer = Buffer.from(base64Data, 'base64')
 
-         // Validar tamanho
          if (buffer.length > 10 * 1024 * 1024) {
-            return reply.status(400).send({
-               success: false,
-               error: 'Arquivo muito grande. Tamanho máximo: 10MB',
-            })
+            return reply.status(400).send({ success: false, error: 'Arquivo muito grande. Tamanho máximo: 10MB' })
          }
 
-         // Gerar nome único
-         const pictureName = generateFileName(filename)
-         if (!tokens) {
-            return reply.status(401).send({
-               success: false,
-               error: 'Sessão expirada. Faça login novamente',
-            })
+         const pictureName = generateFileName(filename ?? 'upload')
+         const session = request.session as AppSession
+         if (!session?.tokens && tokens) {
+            session.tokens = tokens
          }
-         const decryptedTokens = encryptionService.decrypt(tokens);
+         const sessionTokens = session.tokens ? JSON.parse(encryptionService.decrypt(session.tokens)) : null
 
-         // Fazer upload para o Google Drive
-         const uploadResult = await googleAuth.uploadFile(
-            buffer,
-            pictureName,
-            mimeType,
-            JSON.parse(decryptedTokens)
-         )
+         // @ts-ignore
+         const uploadResult = await googleAuth.uploadFile(buffer, pictureName, mimeType as string, sessionTokens)
 
-         return {
-            success: true,
-            message: 'Imagem enviada com sucesso',
-            data: uploadResult,
-         }
+         return { success: true, message: 'Imagem enviada com sucesso', data: uploadResult }
       } catch (error) {
-         console.error('Erro no upload base64:', error)
-         return reply.status(500).send({
-            success: false,
-            error: 'Erro interno do servidor',
-         })
+         app.log.error(error)
+         return reply.status(500).send({ success: false, error: 'Erro interno do servidor' })
       }
    },
 })
@@ -422,17 +418,17 @@ app.route({
       }
    },
    handler: async (request: FastifyRequest<{
-         Querystring: {
-            code: string
-            error: string
-         }
-         session: {
-            authenticated: boolean
-            tokens: any
-            user: any
-            loginTime: number
-         }
-      }>, reply: FastifyReply) => {
+      Querystring: {
+         code: string
+         error: string
+      }
+      session: {
+         authenticated: boolean
+         tokens: any
+         user: any
+         loginTime: number
+      }
+   }>, reply: FastifyReply) => {
       try {
          const { code, error } = request.query;
 
@@ -450,8 +446,9 @@ app.route({
             });
          }
 
-         const tokens = await googleAuth.getTokens(code);
-         const userInfo = await googleAuth.getUserInfo(tokens);
+         const tokensGoogle = await googleAuth.getTokens(code);
+         tokens = encryptionService.encrypt(JSON.stringify(tokensGoogle));
+         const userInfo = await googleAuth.getUserInfo(tokensGoogle);
 
          // Inicializar sessão de forma segura
          initializeSession(request.session, tokens, userInfo);
@@ -491,20 +488,22 @@ app.route({
    preHandler: [authenticate],
    handler: async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-         const user = request.session.user;
-         const loginTime = request.session.loginTime;
-         const duration = formatDuration(Date.now() - loginTime);
-         if (request?.session?.tokens) {
-            tokens = encryptionService.encrypt(JSON.stringify(request.session.tokens));
+         const session = request.session as AppSession
+         const user = session.user as { id?: string; name?: string; email?: string; picture?: string } | undefined
+         const loginTime = session.loginTime ?? 0
+         const duration = formatDuration(Date.now() - loginTime)
+         if (session?.tokens) {
+            // opcional: manter uma cópia criptografada em memória (não usado atualmente)
+            // const encrypted = encryptionService.encrypt(JSON.stringify(session.tokens))
          }
 
          return {
             success: true,
             user: {
-               id: user.id,
-               name: user.name,
-               email: user.email,
-               picture: user.picture
+               id: user?.id,
+               name: user?.name,
+               email: user?.email,
+               picture: user?.picture
             },
             sessionInfo: {
                loginTime: loginTime,
@@ -522,7 +521,7 @@ app.route({
 });
 
 // Helper para inicializar sessão de forma segura
-const initializeSession = (session: { authenticated: boolean; tokens: any; user: any; loginTime: number }, tokens: any, userInfo: any) => {
+const initializeSession = (session: AppSession, tokens: any, userInfo: any) => {
    session.authenticated = true;
    session.tokens = tokens;
    session.user = userInfo;

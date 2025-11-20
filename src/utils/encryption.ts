@@ -6,8 +6,8 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
 export class EncryptionService {
-   private key: Buffer;
-   private encryptionKey = process.env.ENCRYPTION_KEY;
+  private key: Buffer = Buffer.alloc(32);
+  private encryptionKey = process.env.ENCRYPTION_KEY;
 
   constructor() {
     if (this.encryptionKey) {
@@ -15,7 +15,7 @@ export class EncryptionService {
     }
   }
 
-   encrypt(plaintext: string) {
+  encrypt(plaintext: string) {
     const iv = randomBytes(IV_LENGTH);
     const cipher = createCipheriv(ALGO, this.key, iv, { authTagLength: TAG_LENGTH });
     const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -27,10 +27,15 @@ export class EncryptionService {
     };
   }
 
-  decrypt(payload: { iv: string; data: string; tag: string }) {
+  decrypt(payload: { iv?: string; data?: string; tag?: string }) {
+    if (!payload.tag || !payload.iv || !payload.data) {
+      throw new Error('Invalid payload for decryption');
+    }
+    
     const iv = Buffer.from(payload.iv, 'hex');
-    const tag = Buffer.from(payload.tag, 'hex');
+    const tag =  Buffer.from(payload.tag, 'hex');
     const decipher = createDecipheriv(ALGO, this.key, iv, { authTagLength: TAG_LENGTH });
+
     decipher.setAuthTag(tag);
     const decrypted = Buffer.concat([decipher.update(Buffer.from(payload.data, 'hex')), decipher.final()]);
     return decrypted.toString('utf8');

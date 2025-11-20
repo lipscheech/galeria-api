@@ -1,7 +1,6 @@
 {
 	"$schema": "https://www.schemastore.org/tsconfig",
 	"_version": "22.0.0",
-
 	"compilerOptions": {
 		"lib": [
 			"es2024",
@@ -11,15 +10,25 @@
 		],
 		"module": "nodenext",
 		"target": "es2022",
-
+		"declaration": false,
 		"strict": true,
 		"skipLibCheck": true,
 		"moduleResolution": "node16",
-
 		"paths": {
-			"@/*": ["./src/*"]
+			"@/*": [
+				"./src/*"
+			]
 		},
+		"rewriteRelativeImportExtensions": true,
+		"allowImportingTsExtensions": true,
+		"outDir": "./dist/out-tsc",
 	},
-	"include": ["src/**/*.ts"],
-	"exclude": ["node_modules", "dist"]
+	"include": [
+		"src/**/*.ts",
+		"src/**/*.d.ts"
+	],
+	"exclude": [
+		"node_modules",
+		"dist"
+	]
 }

@@ -1,4 +1,4 @@
-import { FileInfo, UploadResult } from './../types/google-drive'
+import { FileInfo, UploadResult } from './../types/google-drive.ts'
 import { Readable } from 'stream'
 import { drive_v3, google } from 'googleapis'
 import { GoogleTokens } from '@/models/google-tokens.model.js'
@@ -8,7 +8,7 @@ export class GoogleDriveService {
 	private folderId: string | undefined
 	private clientId: string | undefined
 	private clientSecret: string | undefined
-	private redirectUri: string | undefined
+	private redirectUri: string | undefined                                                                                                                                                                                                                                                                      
 	private scopes: string[]
 	private oauth2Client: any
 	// ATRIBUTOS PRIVADOS
