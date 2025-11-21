@@ -1,30 +1,29 @@
-# Dockerfile para a aplicação Galeria API
-# Imagem base Node LTS
-FROM node:20-slim
-
-# Diretório de trabalho (alinhado com docker-compose)
+# --- STAGE 1: BUILD ---
+FROM node:20-slim AS builder
 WORKDIR /usr/src/app
-
-# Ativar corepack e instalar pnpm na versão usada pelo projeto
 RUN corepack enable && corepack prepare pnpm@10.22.0 --activate
-
-# Copiar manifests e instalar dependências
-# Copiar manifests e instalar dependências (camada separada para cache)
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
-
-# Copiar código fonte
 COPY . .
+RUN pnpm run build # 👈 Seu código compilado está agora em /usr/src/app/dist
+
+# --- STAGE 2: PRODUCTION (Runtime) ---
+FROM node:20-slim
+WORKDIR /usr/src/app
+
+# Instala apenas dependências de produção
+RUN corepack enable && corepack prepare pnpm@10.22.0 --activate
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --prod # 👈 Instala apenas dependências necessárias para produção
+
+# Copia o código COMPILADO do estágio 'builder'
+COPY --from=builder /usr/src/app/dist ./dist 
 
 # Variáveis de ambiente padrão
 ENV NODE_ENV=production
 ENV PORT=8080
 
-RUN pnpm run build
-
-# Porta exposta
 EXPOSE 8080
 
-# Iniciar a aplicação usando tsx (executa TypeScript diretamente). Em produção
-# você pode preferir compilar para JS e rodar `node dist/server.js`.
-CMD ["pnpm", "run", "start"]
+# Iniciar a aplicação (Usando o node para o JS compilado)
+CMD ["node", "dist/server.js"] # 👈 Altere para o seu arquivo JS compilado
