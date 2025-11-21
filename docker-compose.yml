@@ -11,7 +11,7 @@ services:
 
     # Expor a porta do app (ajuste se necessário)
     ports:
-      - "3333:3333"
+      - "8080:8080"
 
     # Bind mount do código para desenvolvimento (live-reload via pnpm dev).
     # Em produção, remova este volume para usar o artefato do build no container.

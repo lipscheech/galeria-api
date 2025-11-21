@@ -18,12 +18,12 @@ COPY . .
 
 # Variáveis de ambiente padrão
 ENV NODE_ENV=production
-ENV PORT=3333
+ENV PORT=8080
 
 RUN pnpm run build
 
 # Porta exposta
-EXPOSE 3333
+EXPOSE 8080
 
 # Iniciar a aplicação usando tsx (executa TypeScript diretamente). Em produção
 # você pode preferir compilar para JS e rodar `node dist/server.js`.

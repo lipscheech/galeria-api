@@ -8,7 +8,7 @@ export class GoogleDriveService {
 	private folderId: string | undefined
 	private clientId: string | undefined
 	private clientSecret: string | undefined
-	private redirectUri: string | undefined                                                                                                                                                                                                                                                                      
+	private redirectUri: string | undefined
 	private scopes: string[]
 	private oauth2Client: any
 	// ATRIBUTOS PRIVADOS
@@ -32,7 +32,7 @@ export class GoogleDriveService {
 			this.redirectUri,
 		)
 
-		this.drive = google.drive({ version: 'v3', auth: this.oauth2Client });
+		this.drive = google.drive({ version: 'v3', auth: this.oauth2Client })
 
 		// Escopos para Google Cloud Console
 		this.scopes = [
@@ -48,10 +48,10 @@ export class GoogleDriveService {
 		fileBuffer: Buffer,
 		fileName: string,
 		mimeType: string,
-		tokens: GoogleTokens
+		tokens: GoogleTokens,
 	): Promise<UploadResult> {
 		try {
-			this.setAuthTokens(tokens);
+			this.setAuthTokens(tokens)
 
 			const response = await this.drive.files.create({
 				requestBody: {
@@ -222,8 +222,8 @@ export class GoogleDriveService {
 			this.redirectUri,
 		)
 
-		this.oauth2Client.setCredentials(tokens);
-		this.drive = google.drive({ version: 'v3', auth: this.oauth2Client });
+		this.oauth2Client.setCredentials(tokens)
+		this.drive = google.drive({ version: 'v3', auth: this.oauth2Client })
 	}
 }
 

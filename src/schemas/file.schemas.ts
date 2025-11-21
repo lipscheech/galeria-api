@@ -92,10 +92,10 @@ export const UserInfoSchema = Type.Object({
 })
 
 export const TokensSchema = Type.Object({
-   access_token: Type.String(),
-   refresh_token: Type.Optional(Type.String()),
-   expiry_date: Type.Optional(Type.Number()),
-   token_type: Type.String(),
-   scope: Type.String(),
-   id_token: Type.Optional(Type.String())
-});
+	access_token: Type.String(),
+	refresh_token: Type.Optional(Type.String()),
+	expiry_date: Type.Optional(Type.Number()),
+	token_type: Type.String(),
+	scope: Type.String(),
+	id_token: Type.Optional(Type.String()),
+})
