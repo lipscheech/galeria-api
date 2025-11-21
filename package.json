@@ -1,12 +1,11 @@
 {
 	"name": "galeria-api",
 	"version": "1.0.0",
-	"main": "src/index.ts",
+	"main": "src/server.ts",
 	"type": "module",
 	"scripts": {
 		"start": "node dist/out-tsc/server.js",
 		"format": "pnpm exec biome format --write",
-		"dev": "tsx watch src/server.ts",
 		"build": "pnpm exec tsc"
 	},
 	"keywords": [],
