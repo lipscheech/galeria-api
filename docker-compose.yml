@@ -20,7 +20,6 @@ services:
       - node_modules:/usr/src/app/node_modules
 
     # Comando de desenvolvimento (usa script "dev" do package.json).
-    # command: pnpm dev
 
     restart: unless-stopped
 
