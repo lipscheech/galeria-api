@@ -27,4 +27,4 @@ EXPOSE 8080
 
 # Iniciar a aplicação usando tsx (executa TypeScript diretamente). Em produção
 # você pode preferir compilar para JS e rodar `node dist/server.js`.
-CMD ["node", "dist/out-tsc/server.js"]
+CMD ["pnpm", "start"]
