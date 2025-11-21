@@ -418,12 +418,10 @@ const start = async (): Promise<void> => {
 	try {
 		await registerPlugins()
 
-		const port = parseInt(process.env.PORT || '8080')
+		const port = parseInt(process?.env?.PORT ?? '8080', 10)
 		const host = '0.0.0.0'
 
 		await app.listen({ port, host }).then(() => {
-			console.log('🔥 HTTP server running on http://localhost:8080 !')
-			console.log('📚 docs available at http://localhost:8080/docs')
 			console.log(`Servidor rodando na porta ${port}`)
 		})
 	} catch (err) {
