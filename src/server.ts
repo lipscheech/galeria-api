@@ -11,6 +11,7 @@ import { GoogleTokens } from './models/google-tokens.model.js'
 import {
 	CombinedErrorResponseSchema,
 	ErrorResponseSchema,
+	FilesListResponseSchema,
 	UploadResponseSchema,
 	UserInfoSchema,
 } from './schemas/file.schemas.js'
@@ -152,132 +153,6 @@ app.get('/health', async () => {
 	}
 })
 
-// Rota de upload de imagem
-app.route({
-	method: 'POST',
-	url: '/upload',
-	schema: {
-		body: Type.Object({
-			filename: Type.String(),
-			mimeType: Type.String(),
-			data: Type.String(), // base64
-		}),
-		response: {
-			200: UploadResponseSchema,
-			400: CombinedErrorResponseSchema,
-			500: CombinedErrorResponseSchema,
-		},
-	},
-	handler: async (request: FastifyRequest, reply: FastifyReply) => {
-		try {
-			const rawBody = request.body
-
-			let filename: string | undefined
-			let data: string | undefined
-			let mimeType: string | undefined
-
-			if (typeof rawBody === 'string') {
-				if (rawBody.trim().startsWith('{')) {
-					try {
-						const parsed = JSON.parse(rawBody) as {
-							filename?: string
-							fileName?: string
-							data?: string
-							base64?: string
-							mimeType?: string
-						}
-						filename = parsed.filename ?? parsed.fileName
-						data = parsed.data ?? parsed.base64
-						mimeType = parsed.mimeType
-					} catch (e) {
-						data = rawBody
-					}
-				} else {
-					data = rawBody
-				}
-			} else if (rawBody && typeof rawBody === 'object') {
-				const b = rawBody as {
-					filename?: string
-					fileName?: string
-					data?: string
-					base64?: string
-					mimeType?: string
-				}
-				filename = b.filename ?? b.fileName
-				data = b.data ?? b.base64
-				mimeType = b.mimeType
-			}
-
-			if (!data) {
-				return reply
-					.status(400)
-					.send({
-						success: false,
-						error: 'Campo de dados (base64) ausente',
-					})
-			}
-
-			// extrair mimeType se data for dataURL
-			if (
-				!mimeType &&
-				typeof data === 'string' &&
-				data.startsWith('data:')
-			) {
-				const m = data.match(/^data:(.*);base64,/)
-				if (m) mimeType = m[1]
-			}
-
-			if (!mimeType || !isValidImage(mimeType)) {
-				return reply
-					.status(400)
-					.send({
-						success: false,
-						error: 'Tipo de arquivo não permitido. Use apenas imagens',
-					})
-			}
-
-			let base64Data = data
-			if (base64Data.startsWith('data:')) {
-				const idx = base64Data.indexOf(',')
-				if (idx !== -1) base64Data = base64Data.slice(idx + 1)
-			}
-
-			const buffer = Buffer.from(base64Data, 'base64')
-
-			if (buffer.length > 10 * 1024 * 1024) {
-				return reply
-					.status(400)
-					.send({
-						success: false,
-						error: 'Arquivo muito grande. Tamanho máximo: 10MB',
-					})
-			}
-
-			const fileName = generateFileName(filename ?? 'upload')
-			const session = request.session as AppSession
-			const sessionTokens =
-				session?.tokens ?? session?.tokensEncrypted ?? null
-
-			const uploadResult = await googleAuth.uploadFile(
-				buffer,
-				fileName,
-				mimeType as string,
-				sessionTokens as unknown as GoogleTokens,
-			)
-
-			return {
-				success: true,
-				message: 'Imagem enviada com sucesso',
-				data: uploadResult,
-			}
-		} catch (error) {
-			app.log.error(error)
-			return reply
-				.status(500)
-				.send({ success: false, error: 'Erro interno do servidor' })
-		}
-	},
-})
 
 // Rota alternativa de upload que aceita JSON base64
 app.route({
@@ -295,6 +170,7 @@ app.route({
 			500: CombinedErrorResponseSchema,
 		},
 	},
+	bodyLimit: 5 * 1024 * 1024 * 1024, // 20MB
 	handler: async (request: FastifyRequest, reply: FastifyReply) => {
 		try {
 			const rawBody = request.body
@@ -373,15 +249,6 @@ app.route({
 
 			const buffer = Buffer.from(base64Data, 'base64')
 
-			if (buffer.length > 10 * 1024 * 1024) {
-				return reply
-					.status(400)
-					.send({
-						success: false,
-						error: 'Arquivo muito grande. Tamanho máximo: 10MB',
-					})
-			}
-
 			const pictureName = generateFileName(filename ?? 'upload')
 			const session = request.session as AppSession
 			if (!session?.tokens && tokens) {
@@ -403,6 +270,44 @@ app.route({
 				success: true,
 				message: 'Imagem enviada com sucesso',
 				data: uploadResult,
+			}
+		} catch (error) {
+			app.log.error(error)
+			return reply
+				.status(500)
+				.send({ success: false, error: 'Erro interno do servidor' })
+		}
+	},
+});
+
+
+app.route({
+	method: 'GET',
+	url: '/list-files',
+	schema: {
+		response: {
+			200: FilesListResponseSchema,
+			400: CombinedErrorResponseSchema,
+			500: CombinedErrorResponseSchema,
+		}
+	},
+	handler: async (request: FastifyRequest, reply: FastifyReply) => {
+		try {
+			
+			const session = request.session as AppSession
+			if (!session?.tokens && tokens) {
+				session.tokens = tokens
+			}
+			const sessionTokens = session.tokens
+				? JSON.parse(encryptionService.decrypt(session.tokens))
+				: null
+
+			const FileInfo = await googleAuth.listFiles(sessionTokens);
+
+			return {
+				success: true,
+				message: 'Imagem enviada com sucesso',
+				data: FileInfo,
 			}
 		} catch (error) {
 			app.log.error(error)
@@ -586,8 +491,8 @@ app.route({
 	preHandler: [authenticate],
 	handler: async (request: FastifyRequest, reply: FastifyReply) => {
 		try {
-			const session = request.session as AppSession
-			const user = session.user as
+			const session = request?.session as AppSession
+			const user = session?.user as
 				| {
 						id?: string
 						name?: string
@@ -595,8 +500,8 @@ app.route({
 						picture?: string
 				  }
 				| undefined
-			const loginTime = session.loginTime ?? 0
-			const duration = formatDuration(Date.now() - loginTime)
+			const loginTime = session?.loginTime ?? 0
+			const duration = loginTime ? formatDuration(Date.now() - loginTime) : ''
 			if (session?.tokens) {
 				// opcional: manter uma cópia criptografada em memória (não usado atualmente)
 				// const encrypted = encryptionService.encrypt(JSON.stringify(session.tokens))

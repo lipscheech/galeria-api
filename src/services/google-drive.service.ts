@@ -51,7 +51,7 @@ export class GoogleDriveService {
 		tokens: GoogleTokens,
 	): Promise<UploadResult> {
 		try {
-			this.setAuthTokens(tokens)
+			this.setAuthTokens(tokens);
 
 			const response = await this.drive.files.create({
 				requestBody: {
@@ -126,11 +126,12 @@ export class GoogleDriveService {
 		}
 	}
 
-	async listFiles(pageSize: number = 10): Promise<FileInfo[]> {
+	async listFiles(tokens: GoogleTokens, pageSize: number = 10): Promise<FileInfo[]> {
 		try {
+			this.setAuthTokens(tokens);
 			const response = await this.drive.files.list({
 				pageSize: pageSize,
-				fields: 'files(id, name, mimeType, webViewLink, createdTime, size)',
+				fields: 'files(id, name, mimeType, webViewLink, webContentLink, thumbnailLink, createdTime, size)',
 				orderBy: 'createdTime desc',
 			})
 
@@ -139,9 +140,10 @@ export class GoogleDriveService {
 				name: file.name!,
 				mimeType: file.mimeType!,
 				webViewLink: file.webViewLink!,
-				webContentLink: file.webContentLink || '',
-				size: file.size || undefined,
-				createdTime: file.createdTime || undefined,
+				webContentLink: file?.webContentLink,
+				size: file?.size,
+				createdTime: file?.createdTime,
+				thumbnailLink: file?.thumbnailLink,
 			}))
 		} catch (error) {
 			throw new Error(

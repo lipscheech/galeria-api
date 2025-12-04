@@ -16,6 +16,7 @@ export interface FileInfo {
 	webContentLink: string
 	size?: string
 	createdTime?: string
+	thumbnailLink?: string
 }
 
 export interface UploadRequest {

@@ -6,6 +6,14 @@ export const allowedMimeTypes = [
 	'image/gif',
 	'image/webp',
 	'image/svg+xml',
+	'video/mp4',
+	'video/mpeg',
+	'video/quicktime',
+	'video/x-msvideo',
+	'video/x-ms-wmv',
+	'video/webm',
+	'video/3gpp',
+	'video/3gpp2'
 ]
 
 export function isValidImage(mimeType: string): boolean {

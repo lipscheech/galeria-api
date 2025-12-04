@@ -44,9 +44,10 @@ export const FilesListResponseSchema = Type.Object({
 			name: Type.String(),
 			mimeType: Type.String(),
 			webViewLink: Type.String(),
-			webContentLink: Type.String(),
+			webContentLink: Type.Optional(Type.String()),
 			size: Type.Optional(Type.String()),
 			createdTime: Type.Optional(Type.String()),
+			thumbnailLink: Type.Optional(Type.String()),
 		}),
 	),
 })
